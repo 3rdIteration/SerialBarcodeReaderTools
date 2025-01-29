@@ -24,13 +24,19 @@ usage: gm65.py [-h] [--hw-version] [--sw-version] [--sw-year] [--capture] port
 Argument Parser
 
 positional arguments:
+
   port          Serial port to use
 
 options:
+
   -h, --help    show this help message and exit
+  
   --hw-version  Report hardware version and exit
+  
   --sw-version  Report software version and exit
+  
   --sw-year     Report software year and exit
+  
   --capture     Read a QR Code and Exit (Also default behavior if no other command given)
 
 # User Manual
