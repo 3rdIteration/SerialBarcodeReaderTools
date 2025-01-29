@@ -39,7 +39,8 @@ options:
   
   --capture     Read a QR Code and Exit (Also default behavior if no other command given)
 
-# User Manual
+# User Manuals
+https://myosuploads3.banggood.com/products/20200612/20200612015539GM65-SBarcodereadermuduleUserManual.pdf
 
 http://www.microtechnica.tv/support/manual/brm65_man.pdf
 
