@@ -8,6 +8,7 @@ This module uses pyserial, so that needs to be installed via pip
 You can either connect the barcode scanner via a serial port or use the built-in virtual serial port function.
 
 To use this function, you need to scan the following QR code. (You may need to manually trigger scanning the first time to do this, but once enabled, this setting is persistant until reset)
+
 ![](utility_qr_codes/enable_virtual_usb.png)
 
 ## Factory Reset the Scanner
