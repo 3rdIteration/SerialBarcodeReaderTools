@@ -202,7 +202,7 @@ class M3YWScanner(BaseScanner):
     def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
         command_len = len(command).to_bytes(2, byteorder='big')
         raw_data = self.tx_header() + command_len + command + value
-        checksum = self.compute_checksum(raw_data)
+        checksum = self.compute_checksum(command_len + command + value)
         return raw_data + checksum + self.etx_bytes()
 
     def parse_rx(self, data: bytes):
@@ -213,7 +213,7 @@ class M3YWScanner(BaseScanner):
             return None, b''
 
         if header.hex() in self.header_ok().decode():
-            if self.check_checksum(data[1:header_len + data_len + 2]):
+            if self.check_checksum(data[header_len - 3:header_len + data_len + 1]):
                 return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
         return None, b''
 
@@ -225,6 +225,20 @@ class M3YWScanner(BaseScanner):
     def cmd_start_cont_scan(self, value: bytes = b''):
         command = b'S_CMD_020E'
         return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+
+    # Command functions for M3YW that directly create the command and send
+    # Always Off  S_CMD_03L0 (Value = -1)
+    # Normal Mode S_CMD_03L2 (Value = 0)
+    # Always On S_CMD_03L1 (Value = 1)
+    def cmd_set_illumination(self, value: int = 0):
+        print(value)
+        if value < 0:
+            command = b'S_CMD_03L0'
+        elif value > 0:
+            command = b'S_CMD_03L2'
+        else:
+            command = b'S_CMD_03L1'
+        return self.send_and_parse(lambda value: self.create_tx(command), value)
 
 
 # ------------------------
@@ -268,6 +282,7 @@ parser.add_argument("--sw-version", action='store_true')
 parser.add_argument("--sw-year", action='store_true')
 parser.add_argument("--get-settings", action='store_true')
 parser.add_argument("--set-settings")
+parser.add_argument("--set-illumination", type=int)
 parser.add_argument("--save-settings", action='store_true')
 parser.add_argument("--capture", action='store_true')
 args = parser.parse_args()
@@ -288,6 +303,8 @@ elif args.set_settings:
     reply, extra = scanner.cmd_set_settings(args.set_settings.encode())
 elif args.save_settings:
     reply, extra = scanner.cmd_save_settings()
+elif args.set_illumination:
+    reply, extra = scanner.cmd_set_illumination(args.set_illumination)
 else:
     reply, extra = scanner.cmd_start_cont_scan()
     scan_duration = 10
