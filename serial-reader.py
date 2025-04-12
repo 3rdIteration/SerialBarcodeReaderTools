@@ -9,6 +9,7 @@ scanner_module_data = {
     "GM65": {
         "tx_header_0": b'7e00',
         "tx_checksum_bytes": 'compute_crc',
+        "tx_etx_bytes": b'',
         "rx_header_ok": b'020000',
         "rx_header_struct_fmt": "3sB",
         "cmd_get_hw_version": b'070100e101',
@@ -20,21 +21,22 @@ scanner_module_data = {
         "cmd_start_cont_scan": b'0801000201',
     },
     "M3Y-W": {
-        "tx_header_0": b'7e00',
+        "tx_header_0": b'5a00',
         "tx_checksum_bytes": 'compute_bcc',
-        "rx_header_ok": b'020000',
-        "rx_header_struct_fmt": "3sB",
-        "cmd_get_hw_version": b'070100e101',
-        "cmd_get_sw_version": b'070100e201',
-        "cmd_get_sw_year": b'070100e301',
-        "cmd_start_cont_scan": b'0801000201',
+        "tx_etx_bytes": b'a5',
+        "rx_header_ok": b'5a01',
+        "rx_header_struct_fmt": ">2sH",
+        "rx_etx_bytes": b'a5',
+        "cmd_get_hw_version": b'',
+        "cmd_get_sw_version": b'T_OUT_CVER',
+        "cmd_get_sw_year": b'',
+        "cmd_start_cont_scan": b'S_CMD_020E',
     },
 }
 
 # Some GM65 (and compatible readers) can't correctly/reliabily read binary QR codes. This seems to follow SW version
-gm65_known_bad_sw_versions = [69]
-gm65_known_good_sw_version = [87]
-gm65_known_good_sw_year = [87]
+gm65_known_bad_sw_versions = [0x69]
+gm65_known_good_sw_version = [0x87, 0xaf]
 
 parser=argparse.ArgumentParser(description="Argument Parser")
 parser.add_argument("port", help="Serial port to use")
@@ -121,7 +123,7 @@ def compute_bcc(data: bytes) -> int:
     bcc = 0
     for byte in data:
         bcc ^= byte
-    return bcc
+    return bytes([bcc])
 
 def check_bcc(data_with_bcc: bytes) -> bool:
     """Check if the BCC is correct. Assumes the last byte is the BCC."""
@@ -129,33 +131,56 @@ def check_bcc(data_with_bcc: bytes) -> bool:
         raise ValueError("Input must include at least one byte of data and one byte for BCC.")
 
     data = data_with_bcc[:-1]
-    received_bcc = data_with_bcc[-1]
+    received_bcc = bytes([data_with_bcc[-1]])
     calculated_bcc = compute_bcc(data)
+
+    a = received_bcc
+    b = compute_bcc(data)
 
     return received_bcc == calculated_bcc
 
 def create_tx(reader, command, value = b''):
     reader_info = scanner_module_data[reader]
+    if reader == "M3Y-W":
+        tx_command = binascii.hexlify(len(reader_info[command]).to_bytes(2, byteorder='big') + reader_info[command])
+    else:
+        tx_command = reader_info[command]
+
     if reader_info["tx_checksum_bytes"] == "compute_crc":
-        checksum = (compute_crc16_xmodem(binascii.unhexlify(reader_info[command] + value)))
+        checksum = (compute_crc16_xmodem(binascii.unhexlify(tx_command + value)))
     elif reader_info["tx_checksum_bytes"] == "compute_bcc":
-        checksum = (compute_bcc(binascii.unhexlify(reader_info[command] + value)))
-    return binascii.unhexlify(reader_info["tx_header_0"] + reader_info[command] + value) + checksum
+        checksum = (compute_bcc(binascii.unhexlify(tx_command + value)))
+
+    return binascii.unhexlify(reader_info["tx_header_0"] +
+                              tx_command +
+                              value +
+                              binascii.hexlify(checksum) +
+                              reader_info["tx_etx_bytes"])
 
 def parse_rx(reader, data):
     reader_info = scanner_module_data[reader]
     header_len = struct.calcsize(reader_info["rx_header_struct_fmt"])
-    header, data_len = struct.unpack(reader_info["rx_header_struct_fmt"], data[:header_len])
+    try:
+        header, data_len = struct.unpack(reader_info["rx_header_struct_fmt"], data[:header_len])
+    except struct.error:
+        return None
 
     if header.hex() in reader_info["rx_header_ok"].decode():
-        if check_crc16_xmodem(data[1:header_len + data_len + 2]):
-            return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
+        if reader_info["tx_checksum_bytes"] == "compute_crc":
+            if check_crc16_xmodem(data[1:header_len + data_len + 2]):
+                return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
+
+        elif reader_info["tx_checksum_bytes"] == "compute_bcc":
+            if check_bcc(data[len(header)-1:header_len + data_len + 1]):
+                return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
+
     else:
         return None
 
-ser = serial.Serial(args.port, 9600, timeout=0.5)
+ser = serial.Serial(args.port, 9600, timeout=1)
 
 # Determine the reader type
+reader = None
 for test_reader in scanner_module_data.keys():
     print("Looking for", test_reader)
     ser.write(create_tx(test_reader,"cmd_get_sw_version")) # This command is available on most readers
@@ -168,7 +193,7 @@ if not reader:
     exit("No supported reader found...")
 
 # Sets how long to wait for data from the scanner (Can be really short when just querying for settings)
-scan_duration = 0.5
+scan_duration = 1
 
 if args.hw_version:
     print("Getting Hardware Version...")
@@ -209,5 +234,5 @@ print("Got Raw Data:",rx_data, ", AsHex:", binascii.hexlify(rx_data))
 # Process data a bit
 reply, extra_data = parse_rx(reader,rx_data)
 
-print("Reply Data:", reply.hex())
-print("Extra Data:", extra_data.hex())
+print("Reply Data:", reply, ", AsHex:", binascii.hexlify(reply).hex())
+print("Extra Data:", extra_data, ", AsHex:", binascii.hexlify(extra_data).hex())
