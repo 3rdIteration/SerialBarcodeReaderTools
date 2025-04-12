@@ -42,6 +42,12 @@ def check_bcc(data_with_bcc: bytes) -> bool:
     calculated_bcc = compute_bcc(data)
     return received_bcc == calculated_bcc
 
+def set_bit(val, bit): return val | (1 << bit)
+def clear_bit(val, bit): return val & ~(1 << bit)
+def toggle_bit(val, bit): return val ^ (1 << bit)
+def check_bit(val, bit): return (val >> bit) & 1
+
+
 # ------------------------
 # Abstract Scanner Class
 # ------------------------
@@ -83,24 +89,50 @@ class BaseScanner(ABC):
         pass
 
     def send_and_parse(self, cmd_function, value: bytes = b''):
-        """
-        Transmit the command, then parse the response from the scanner.
-        """
-        # Send the command
         tx_data = cmd_function(value)
         print("Sent:", tx_data, "AsHex:", binascii.hexlify(tx_data))
-        # Send over serial
         self.serial_port.write(tx_data)
-
-        # Wait for a response
         rx_data = self.serial_port.read(1024)
         print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
-
-        # Parse the response
         reply, extra = self.parse_rx(rx_data)
         print("Reply:", reply, "AsHex:", binascii.hexlify(reply))
         print("Extra:", extra, "AsHex:", binascii.hexlify(extra))
         return reply, extra
+
+    # Placeholder command methods
+    def cmd_get_hw_version(self, value: bytes = b''):
+        raise NotImplementedError("cmd_get_hw_version not implemented for this reader")
+
+    def cmd_get_sw_version(self, value: bytes = b''):
+        raise NotImplementedError("cmd_get_sw_version not implemented for this reader")
+
+    def cmd_get_sw_year(self, value: bytes = b''):
+        raise NotImplementedError("cmd_get_sw_year not implemented for this reader")
+
+    def cmd_get_settings(self, value: bytes = b''):
+        raise NotImplementedError("cmd_get_settings not implemented for this reader")
+
+    def cmd_set_settings(self, value: bytes = b''):
+        raise NotImplementedError("cmd_set_settings not implemented for this reader")
+
+    def cmd_save_settings(self, value: bytes = b''):
+        raise NotImplementedError("cmd_save_settings not implemented for this reader")
+
+    def cmd_start_cont_scan(self, value: bytes = b''):
+        raise NotImplementedError("cmd_start_cont_scan not implemented for this reader")
+
+    def cmd_stop_scan(self, value: bytes = b''):
+        raise NotImplementedError("cmd_stop_scan not implemented for this reader")
+
+    def cmd_set_illumination(self, value: int = 0):
+        raise NotImplementedError("cmd_set_illumination not implemented for this reader")
+
+    def cmd_set_aimer(self, value: int = 0):
+        raise NotImplementedError("cmd_set_aimer not implemented for this reader")
+
+    def cmd_set_beeper(self, value: int = 0):
+        raise NotImplementedError("cmd_set_beeper not implemented for this reader")
+
 
 # ------------------------
 # GM65 Scanner
@@ -173,6 +205,58 @@ class GM65Scanner(BaseScanner):
         command = binascii.unhexlify('0801000201')
         return self.send_and_parse(lambda value: self.create_tx(command, value), value)
 
+    # Always Off   (Value = -1)
+    # Normal Mode  (Value = 0)
+    # Always On    (Value = 1)
+    def cmd_set_illumination(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 3)
+            settings_int = clear_bit(settings_int, 2)
+        elif value == 0:
+            settings_int = set_bit(settings_int, 2)
+            settings_int = clear_bit(settings_int, 3)
+        elif value > 0:
+            settings_int = set_bit(settings_int, 3)
+            settings_int = set_bit(settings_int, 2)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    # Always Off   (Value = -1)
+    # Normal Mode  (Value = 0)
+    # Always On    (Value = 1)
+    def cmd_set_aimer(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 5)
+            settings_int = clear_bit(settings_int, 4)
+        elif value == 0:
+            settings_int = set_bit(settings_int, 4)
+            settings_int = clear_bit(settings_int, 5)
+        elif value > 0:
+            settings_int = set_bit(settings_int, 5)
+            settings_int = set_bit(settings_int, 4)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    # Muted  (Value = -1)
+    # On     (Value = 1)
+    def cmd_set_beeper(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 6)
+        elif value == 0:
+            raise NotImplementedError
+        elif value > 0:
+            settings_int = set_bit(settings_int, 6)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
 
 # ------------------------
 # M3Y-W Scanner
@@ -226,20 +310,46 @@ class M3YWScanner(BaseScanner):
         command = b'S_CMD_020E'
         return self.send_and_parse(lambda value: self.create_tx(command, value), value)
 
+    def cmd_stop_scan(self, value: bytes = b''):
+        command = b'S_CMD_020D'
+        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+
     # Command functions for M3YW that directly create the command and send
     # Always Off  S_CMD_03L0 (Value = -1)
     # Normal Mode S_CMD_03L2 (Value = 0)
-    # Always On S_CMD_03L1 (Value = 1)
+    # Always On   S_CMD_03L1 (Value = 1)
     def cmd_set_illumination(self, value: int = 0):
-        print(value)
         if value < 0:
             command = b'S_CMD_03L0'
-        elif value > 0:
+        elif value == 0:
             command = b'S_CMD_03L2'
-        else:
+        elif value > 0:
             command = b'S_CMD_03L1'
         return self.send_and_parse(lambda value: self.create_tx(command), value)
 
+    # Always Off  S_CMD_03A0 (Value = -1)
+    # Normal Mode S_CMD_03A2 (Value = 0)
+    # Always On S_CMD_03A1 (Value = 1)
+    def cmd_set_aimer(self, value: int = 0):
+        if value < 0:
+            command = b'S_CMD_03A0'
+        elif value == 0:
+            command = b'S_CMD_03A2'
+        elif value > 0:
+            command = b'S_CMD_03A1'
+
+        return self.send_and_parse(lambda value: self.create_tx(command), value)
+
+    # Mute all        S_CMD_04F0 (Value = -1)
+    # Unmute all      S_CMD_04F1 (Value = 1)
+    def cmd_set_beeper(self, value: int = 0):
+        if value < 0:
+            command = b'S_CMD_04F0'
+        elif value == 0:
+            raise NotImplementedError
+        elif value > 0:
+            command = b'S_CMD_04F1'
+        return self.send_and_parse(lambda value: self.create_tx(command), value)
 
 # ------------------------
 # Scanner Factory
@@ -283,8 +393,11 @@ parser.add_argument("--sw-year", action='store_true')
 parser.add_argument("--get-settings", action='store_true')
 parser.add_argument("--set-settings")
 parser.add_argument("--set-illumination", type=int)
+parser.add_argument("--set-aimer", type=int)
+parser.add_argument("--set-beeper", type=int)
 parser.add_argument("--save-settings", action='store_true')
-parser.add_argument("--capture", action='store_true')
+parser.add_argument("--start-capture", action='store_true')
+parser.add_argument("--stop-capture", action='store_true')
 args = parser.parse_args()
 
 ser = serial.Serial(args.port, 9600, timeout=1)
@@ -303,8 +416,18 @@ elif args.set_settings:
     reply, extra = scanner.cmd_set_settings(args.set_settings.encode())
 elif args.save_settings:
     reply, extra = scanner.cmd_save_settings()
-elif args.set_illumination:
+elif args.set_illumination is not None:
+    print("Setting Illumination")
     reply, extra = scanner.cmd_set_illumination(args.set_illumination)
+elif args.set_aimer is not None:
+    print("Setting Aimer")
+    reply, extra = scanner.cmd_set_aimer(args.set_aimer)
+elif args.set_beeper is not None:
+    print("Setting Beeper")
+    reply, extra = scanner.cmd_set_beeper(args.set_beeper)
+elif args.stop_capture:
+    print("Setting Beeper")
+    reply, extra = scanner.cmd_stop_scan()
 else:
     reply, extra = scanner.cmd_start_cont_scan()
     scan_duration = 10
@@ -314,5 +437,10 @@ start = time.time()
 rx_data = b''
 while (time.time() - start) <= scan_duration:
     rx_data += ser.read(1024)
+
+try:
+    scanner.cmd_stop_scan()
+except:
+    pass
 
 ser.close()
