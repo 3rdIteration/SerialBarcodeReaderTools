@@ -7,6 +7,7 @@ Supported Readers:
 * GM65 (and GM65S) 
 * GM805
 * M3Y-W
+  
 _All of the commands below first attempt to auto-detect the reader you are using..._
 
 There are also some manuals for these devices in the manuals folder of this repository.
