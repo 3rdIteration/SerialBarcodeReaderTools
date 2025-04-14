@@ -100,6 +100,10 @@ class BaseScanner(ABC):
     def cmd_send_raw(self, value: str = ''):
         pass
 
+    @abstractmethod
+    def cmd_set_baudrate(self, value: int = 9600):
+        pass
+
     def etx_bytes(self) -> bytes:
         pass
 

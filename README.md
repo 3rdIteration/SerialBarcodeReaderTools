@@ -1,5 +1,7 @@
 # Serial Barcode Reader Tools
-This repository is a collection of tools and information that are useful when using common serial barcode scanners. The goal is to serve a reference implmenentation of sorts to make it easier to add support for these in other DIY projects. (This is also why it is chatty in the console, to let you see exactly what is going on...)
+This repository is a collection of tools and information that are useful when using common serial barcode scanners. The goal is to serve a reference implmenentation of sorts to make it easier to add support for these in other DIY projects.
+
+This script is quite chatty in the console, to let you see exactly what is going on and also to make it easy to do things like test/edit certain commands and then just copy the resultant hex output for use on smaller/simpler systems.
 
 It is not supposed to be exhaustive, but rather to demonstrate a basic set of functionality to get you started with the device. 
 
