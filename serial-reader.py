@@ -104,6 +104,10 @@ class BaseScanner(ABC):
     def cmd_set_baudrate(self, value: int = 9600):
         pass
 
+    @abstractmethod
+    def get_safe_for_binaryqr(self):
+        pass
+
     def etx_bytes(self) -> bytes:
         pass
 
@@ -165,6 +169,16 @@ class BaseScanner(ABC):
                 print(baudrate, "Success")
             else:
                 print(baudrate, "Failed")
+
+    def find_baudrate(self):
+        for baudrate in common_baud_rates:
+            print("Checking at...", baudrate)
+            self.serial_port.baudrate = int(baudrate)
+            reply, _ = self.cmd_get_sw_version()
+            if reply:
+                return baudrate
+
+        return None
 
 # ------------------------
 # GM65 Scanner
@@ -338,6 +352,19 @@ class GM65Scanner(BaseScanner):
         else:
             return False, None
 
+    def get_safe_for_binaryqr(self):
+        gm65_known_bad_sw_versions = [b'69'] # Versions known to scan binaryQR codes unreliably
+        gm65_known_good_sw_version = [b'87', b'af'] # Versions known to be work correctly
+        version, extra = self.cmd_get_sw_version()
+        version = binascii.hexlify(version)
+        print("Got Software Version:", version, "Checking...")
+        if version in gm65_known_bad_sw_versions:
+            return False
+        elif version in gm65_known_good_sw_version:
+            return True
+        else:
+            return None
+
 # ------------------------
 # M3Y-W Scanner
 # ------------------------
@@ -459,33 +486,25 @@ class M3YWScanner(BaseScanner):
         else:
             return False, None
 
+    def get_safe_for_binaryqr(self):
+        return True
+
 # ------------------------
 # Scanner Factory
 # ------------------------
 def detect_scanner(serial_port) -> BaseScanner:
     """
     Identify the scanner by sending a request for its software version.
-    Uses send_and_parse directly for each scanner type.
     """
-    gm65_scanner = GM65Scanner(serial_port)
-    m3yw_scanner = M3YWScanner(serial_port)
-
-    # Try GM65 scanner
-    reply, _ = gm65_scanner.cmd_get_sw_version()
-    if reply:
-        print("Identified Scanner: GM65Scanner")
-        return gm65_scanner
-    else:
-        print("GM65Scanner not detected")
-
-    # Try M3YW scanner
-
-    reply, _ = m3yw_scanner.cmd_get_sw_version()
-    if reply:
-        print("Identified Scanner: M3YWScanner")
-        return m3yw_scanner
-    else:
-        print("M3YWScanner not detected")
+    for scanner in [GM65Scanner, M3YWScanner]:
+        scanner = scanner(serial_port)
+        print("Trying", scanner.__class__.__name__)
+        foundbaud = scanner.find_baudrate()
+        if foundbaud:
+            print("Identified Scanner:", scanner.__class__.__name__, "at baudrate:", foundbaud)
+            return scanner
+        else:
+            print(scanner.__class__.__name__, "not detected")
 
     raise RuntimeError("No supported scanner found")
 
@@ -499,6 +518,7 @@ parser.add_argument("--hw-version", action='store_true', help="Query the device 
 parser.add_argument("--sw-version", action='store_true', help="Query the device for the software version")
 parser.add_argument("--sw-year", action='store_true', help="Query the device for the software year")
 parser.add_argument("--get-settings", action='store_true', help="Get the settings zome (GM65) and represent as hex")
+parser.add_argument("--get-safe-for-binary-qr", help="Check if the connected reader is know to be safe for binary QR scanning")
 parser.add_argument("--set-settings", help="Save the supplied byte to the settings zone (GM65)")
 parser.add_argument("--set-illumination", type=int, help="Adjust the illumination light. -1 = always off, 0 = On while scanning, 1 = always on")
 parser.add_argument("--set-aimer", type=int, help="Adjust the aiming light. -1 = always off, 0 = On while scanning, 1 = always on")
@@ -575,6 +595,16 @@ elif args.set_baudrate is not None:
         print("Baudrate Change Failed...")
 elif args.test_baudrates:
     scanner.test_baudrates()
+elif args.get_safe_for_binary_qr:
+    safe = scanner.get_safe_for_binaryqr()
+    if safe is not None:
+        if safe:
+            print("Good News: Safe to use")
+        else:
+            print("WARNING: Known to be unsafe for binary QR scanning")
+    else:
+        print("Unsure... Unable to match software version as known-good or known-bad...")
+
 else:
     print("Setting Continuous Mode")
     reply, extra = scanner.cmd_set_continuous_mode()
@@ -590,13 +620,5 @@ else:
     print("Setting Command Mode")
     reply, extra = scanner.cmd_set_command_mode()
     print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
-
-# Keep scanning
-start = time.time()
-rx_data = b''
-while (time.time() - start) <= scan_duration:
-    rx_data += ser.read(1024)
-
-print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
 
 ser.close()
