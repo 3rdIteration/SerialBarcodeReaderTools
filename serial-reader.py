@@ -227,14 +227,19 @@ class GM65Scanner(BaseScanner):
         return self.send_and_parse(self.create_tx(command))
 
     def cmd_set_continuous_mode(self):
-        command = binascii.unhexlify('0801000201')
-        return self.send_and_parse(self.create_tx(command))
-
-    def cmd_set_continuous_mode(self):
         settings, extra = self.cmd_get_settings()
         settings_int = settings[0]
-        settings_int = set_bit(settings_int, 2)
-        settings_int = clear_bit(settings_int, 3)
+        settings_int = set_bit(settings_int, 1)
+        settings_int = clear_bit(settings_int, 0)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    def cmd_set_command_mode(self):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        settings_int = set_bit(settings_int, 0)
+        settings_int = clear_bit(settings_int, 1)
         self.cmd_set_settings(bytes([settings_int]))
         self.cmd_save_settings()
         return True, None
@@ -295,11 +300,11 @@ class GM65Scanner(BaseScanner):
     def cmd_set_read_interval(self, value: float = 0):
         command = binascii.unhexlify('08010005')
         value = (round(value * 10)).to_bytes(1)
-        return self.send_and_parse(self.create_tx(command))
+        return self.send_and_parse(self.create_tx(command, value))
 
     def cmd_set_same_barcode_delay(self, value: float = 0):
         command = binascii.unhexlify('08010013')
-        value = (round(value * 10)).to_bytes(1)
+        value = (round(value * 40)).to_bytes(1)
         return self.send_and_parse(self.create_tx(command, value))
 
     def cmd_send_raw(self, value: str = ''):
@@ -509,10 +514,11 @@ if args.baudrate:
 
 ser = serial.Serial(args.port, baudrate, timeout=1)
 
-if "gm65" in args.scanner.lower():
-    scanner = GM65Scanner(ser)
-elif "m3y" in args.scanner.lower():
-    scanner = M3YWScanner(ser)
+if args.scanner:
+    if "gm65" in args.scanner.lower():
+        scanner = GM65Scanner(ser)
+    elif "m3y" in args.scanner.lower():
+        scanner = M3YWScanner(ser)
 else:
     scanner = detect_scanner(ser)
 
@@ -563,7 +569,7 @@ elif args.set_baudrate is not None:
 elif args.test_baudrates:
     scanner.test_baudrates()
 else:
-    print("Setting Command Mode")
+    print("Setting Continuous Mode")
     reply, extra = scanner.cmd_set_continuous_mode()
 
     print("Scanning for 10 Seconds")
