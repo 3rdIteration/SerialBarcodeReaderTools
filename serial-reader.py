@@ -303,9 +303,12 @@ class GM65Scanner(BaseScanner):
         return self.send_and_parse(self.create_tx(command, value))
 
     def cmd_set_same_barcode_delay(self, value: float = 0):
+        if value > 12.7: # Value needs to be below 12.7s as bit7 is used for enable/disable the feature
+            raise ValueError
         command = binascii.unhexlify('08010013')
-        value = (round(value * 40)).to_bytes(1)
-        return self.send_and_parse(self.create_tx(command, value))
+        value = (round(value * 10)).to_bytes(1)
+        value = set_bit(value[0], 7)
+        return self.send_and_parse(self.create_tx(command, bytes([value])))
 
     def cmd_send_raw(self, value: str = ''):
         command = binascii.unhexlify(value)
