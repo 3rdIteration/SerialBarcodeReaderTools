@@ -21,20 +21,39 @@ You will also need to connect the reader to a serial port on your device. (Any U
 usage: serial-reader.py [-h] [--hw-version] [--sw-version] [--sw-year] [--capture] port
 
 positional arguments:
-
-  port          Serial port to use
+  port                  Serial port to use
 
 options:
+  -h, --help            show this help message and exit
+  --scanner SCANNER     Scanner type (gm65 or m3y)
+  --hw-version          Query the device for the hardware version
+  --sw-version          Query the device for the software version
+  --sw-year             Query the device for the software year
+  --get-settings        Get the settings zome (GM65) and represent as hex
+  --set-settings SET_SETTINGS
+                        Save the supplied byte to the settings zone (GM65)
+  --set-illumination SET_ILLUMINATION
+                        Adjust the illumination light. -1 = always off, 0 = On while scanning, 1 = always on
+  --set-aimer SET_AIMER
+                        Adjust the aiming light. -1 = always off, 0 = On while scanning, 1 = always on
+  --set-beeper SET_BEEPER
+                        Adjust the beeper. -1 = muted, 1 = on
+  --set-read-interval SET_READ_INTERVAL
+                        Adjust the minimum time between QR code reads
+  --set-same-barcode-delay SET_SAME_BARCODE_DELAY
+                        Adjust the minimumt ime between re-reading the same QR code
+  --send-raw-cmd SEND_RAW_CMD
+                        Send a raw command to the reader
+  --save-settings       Save settings to EEPROM (Required for GM65 to persist settings across reboots)
+  --set-continuous-mode
+                        Put scanner in continious mode
+  --set-command-mode    Put scanner in command mode (will stop continious mode)
+  --set-baudrate {9600,14400,19200,38400,57600,115200}
+                        Changes the scanners baudrate and checks if this was successful
+  --baudrate {9600,14400,19200,38400,57600,115200}
+                        Sets the baudrate that this tool will use (Default 9600)
+  --test-baudrates      Runs through a list of common baud rates to see what your device supports (Or finds out what BAUD it is currently using)
 
-  -h, --help    show this help message and exit
-  
-  --hw-version  Report hardware version and exit
-  
-  --sw-version  Report software version and exit
-  
-  --sw-year     Report software year and exit
-  
-  --capture     Read a QR Code and Exit (Also default behavior if no other command given)
 
 ## GM65 & GM805 Barcode Scanner Specific Options
 

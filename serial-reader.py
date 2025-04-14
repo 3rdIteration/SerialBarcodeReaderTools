@@ -3,236 +3,587 @@ import time
 import argparse
 import struct
 import binascii
+from abc import ABC, abstractmethod
 
-# Settings for different scanner type
-scanner_module_data = {
-    "GM65": {
-        "tx_header_0": b'7e00',
-        "tx_checksum_bytes": 'compute_crc',
-        "tx_etx_bytes": b'',
-        "rx_header_ok": b'020000',
-        "rx_header_struct_fmt": "3sB",
-        "cmd_get_hw_version": b'070100e101',
-        "cmd_get_sw_version": b'070100e201',
-        "cmd_get_sw_year": b'070100e301',
-        "cmd_get_settings": b'0701000001',
-        "cmd_set_settings": b'08010000',
-        "cmd_save_settings": b'0901000000',
-        "cmd_start_cont_scan": b'0801000201',
-    },
-    "M3Y-W": {
-        "tx_header_0": b'5a00',
-        "tx_checksum_bytes": 'compute_bcc',
-        "tx_etx_bytes": b'a5',
-        "rx_header_ok": b'5a01',
-        "rx_header_struct_fmt": ">2sH",
-        "rx_etx_bytes": b'a5',
-        "cmd_get_hw_version": b'',
-        "cmd_get_sw_version": b'T_OUT_CVER',
-        "cmd_get_sw_year": b'',
-        "cmd_start_cont_scan": b'S_CMD_020E',
-    },
-}
+# ------------------------
+# Useful constants
+# ------------------------
+# Not exhaustive, but supported by both the M3Y and GM65
+common_baud_rates = [
+    '9600',
+    '14400',
+    '19200',
+    '38400',
+    '57600',
+    '115200',
+]
 
-# Some GM65 (and compatible readers) can't correctly/reliabily read binary QR codes. This seems to follow SW version
-gm65_known_bad_sw_versions = [0x69]
-gm65_known_good_sw_version = [0x87, 0xaf]
-
-parser=argparse.ArgumentParser(description="Argument Parser")
-parser.add_argument("port", help="Serial port to use")
-parser.add_argument("--hw-version", action='store_true', help="Report hardware version and exit")
-parser.add_argument("--sw-version", action='store_true', help="Report software version and exit")
-parser.add_argument("--sw-year", action='store_true', help="Report software year and exit")
-parser.add_argument("--get-settings", action='store_true', help="Get the settings (Aim Light, Beep, Illumination Light) and exit")
-parser.add_argument("--set-settings", help="Set the settings byte (Aim Light, Beep, Illumination Light) and exit")
-parser.add_argument("--save-settings", action='store_true', help="Save the settings byte to EEPROM (Aim Light, Beep, Illumination Light) and exit")
-parser.add_argument("--capture", action='store_true', help="Scan QR Codes for 10 seconds and Exit (Also default behavior if no other command given)")
-args=parser.parse_args()
-
-# Thanks ChatGPT ;)
+# ------------------------
+# Utility Functions
+# ------------------------
 def compute_crc16_xmodem(data: bytes) -> bytes:
-    """
-    Calculate the CRC-16 checksum for the given data using a bitwise method.
-
-    This function computes a 16-bit CRC checksum based on the CRC-16-CCITT (XModem)
-    polynomial (0x1021). It processes the data byte by byte, shifting and applying
-    the CRC polynomial bitwise to calculate the checksum.
-
-    Parameters:
-    - data (bytes): The input data for which the CRC is to be calculated.
-      The data is a sequence of bytes (e.g., b'Hello').
-
-    Returns:
-    - bytes: A 2-byte checksum in big-endian format representing the CRC-16
-      checksum of the input data. The result will be a byte array with
-      the high byte first and the low byte second.
-
-    Process:
-    - For each byte in the input data:
-        - The CRC is shifted left by 1 bit.
-        - If the high bit of the CRC is set (i.e., overflow occurs),
-          the polynomial 0x11021 is XORed with the CRC.
-        - The bits of the current byte are processed from the highest to
-          the lowest bit (bit 7 to bit 0), and if the bit is set, the
-          polynomial 0x1021 is XORed with the CRC.
-    - The final CRC is returned as a 2-byte value in big-endian order.
-
-    Example:
-    #>>> data = b"Hello"
-    #>>> compute_crc16_xmodem(data)
-    b'\xee\x8a'  # Returns the calculated CRC as a 2-byte big-endian value
-    """
     crc = 0
     for byte in data:
-        for i in range(7, -1, -1):  # From bit 7 (MSB) to bit 0 (LSB)
+        for i in range(7, -1, -1):
             crc *= 2
             if (crc & 0x10000) != 0:
                 crc ^= 0x11021
             if (byte & (1 << i)) != 0:
                 crc ^= 0x1021
-    crc &= 0xFFFF  # Trim to 16 bits
-    return crc.to_bytes(2, byteorder='big')  # Return as big-endian bytes
-
+    crc &= 0xFFFF
+    return crc.to_bytes(2, byteorder='big')
 
 def check_crc16_xmodem(data_with_crc: bytes) -> bool:
-    """
-    Check if the CRC of the data (with CRC appended) is correct.
-
-    Arguments:
-    - data_with_crc: bytes - the data with the CRC appended at the end.
-
-    Returns:
-    - True if the CRC is valid, False if the CRC is invalid.
-    """
     if len(data_with_crc) < 3:
-        raise ValueError("Data must include at least one byte of data plus two CRC bytes.")
-
-    # Separate the data and the CRC
+        return False
     data = data_with_crc[:-2]
     received_crc = data_with_crc[-2:]
-
-    # Calculate CRC for the data
     calculated_crc = compute_crc16_xmodem(data)
-
-    # Check if the calculated CRC matches the received CRC
     return received_crc == calculated_crc
 
-# Thanks ChatGPT ;)
-def compute_bcc(data: bytes) -> int:
-    """Compute the Block Check Character (BCC) using XOR."""
+def compute_bcc(data: bytes) -> bytes:
     bcc = 0
     for byte in data:
         bcc ^= byte
     return bytes([bcc])
 
 def check_bcc(data_with_bcc: bytes) -> bool:
-    """Check if the BCC is correct. Assumes the last byte is the BCC."""
     if len(data_with_bcc) < 2:
-        raise ValueError("Input must include at least one byte of data and one byte for BCC.")
-
+        return False
     data = data_with_bcc[:-1]
-    received_bcc = bytes([data_with_bcc[-1]])
+    received_bcc = data_with_bcc[-1:]
     calculated_bcc = compute_bcc(data)
-
-    a = received_bcc
-    b = compute_bcc(data)
-
     return received_bcc == calculated_bcc
 
-def create_tx(reader, command, value = b''):
-    reader_info = scanner_module_data[reader]
-    if reader == "M3Y-W":
-        tx_command = binascii.hexlify(len(reader_info[command]).to_bytes(2, byteorder='big') + reader_info[command])
-    else:
-        tx_command = reader_info[command]
+def set_bit(val, bit): return val | (1 << bit)
+def clear_bit(val, bit): return val & ~(1 << bit)
+def toggle_bit(val, bit): return val ^ (1 << bit)
+def check_bit(val, bit): return (val >> bit) & 1
 
-    if reader_info["tx_checksum_bytes"] == "compute_crc":
-        checksum = (compute_crc16_xmodem(binascii.unhexlify(tx_command + value)))
-    elif reader_info["tx_checksum_bytes"] == "compute_bcc":
-        checksum = (compute_bcc(binascii.unhexlify(tx_command + value)))
+# ------------------------
+# Abstract Scanner Class
+# ------------------------
+class BaseScanner(ABC):
+    def __init__(self, serial_port):
+        self.serial_port = serial_port
+        self.commands = {}
 
-    return binascii.unhexlify(reader_info["tx_header_0"] +
-                              tx_command +
-                              value +
-                              binascii.hexlify(checksum) +
-                              reader_info["tx_etx_bytes"])
+    @abstractmethod
+    def tx_header(self) -> bytes:
+        pass
 
-def parse_rx(reader, data):
-    reader_info = scanner_module_data[reader]
-    header_len = struct.calcsize(reader_info["rx_header_struct_fmt"])
-    try:
-        header, data_len = struct.unpack(reader_info["rx_header_struct_fmt"], data[:header_len])
-    except struct.error:
-        return None
+    @abstractmethod
+    def compute_checksum(self, data: bytes) -> bytes:
+        pass
 
-    if header.hex() in reader_info["rx_header_ok"].decode():
-        if reader_info["tx_checksum_bytes"] == "compute_crc":
-            if check_crc16_xmodem(data[1:header_len + data_len + 2]):
+    @abstractmethod
+    def check_checksum(self, data: bytes) -> bool:
+        pass
+
+    @abstractmethod
+    def header_ok(self) -> bytes:
+        pass
+
+    @abstractmethod
+    def rx_struct_fmt(self) -> str:
+        pass
+
+    @abstractmethod
+    def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
+        pass
+
+    @abstractmethod
+    def parse_rx(self, data: bytes):
+        pass
+
+    @abstractmethod
+    def cmd_send_raw(self, value: str = ''):
+        pass
+
+    def etx_bytes(self) -> bytes:
+        pass
+
+    def send_and_parse(self, tx_data):
+        print("Sent (Raw):", tx_data, "AsHex:", binascii.hexlify(tx_data))
+        self.serial_port.write(tx_data)
+        rx_data = self.serial_port.read(1024)
+        print("Got (Raw):", rx_data, "AsHex:", binascii.hexlify(rx_data))
+        reply, extra = self.parse_rx(rx_data)
+        if reply:
+            print("Reply:", reply, "AsHex:", binascii.hexlify(reply))
+            print("Extra:", extra, "AsHex:", binascii.hexlify(extra))
+        return reply, extra
+
+    # Placeholder command methods
+    def cmd_get_hw_version(self):
+        raise NotImplementedError("cmd_get_hw_version not implemented for this reader")
+
+    def cmd_get_sw_version(self):
+        raise NotImplementedError("cmd_get_sw_version not implemented for this reader")
+
+    def cmd_get_sw_year(self):
+        raise NotImplementedError("cmd_get_sw_year not implemented for this reader")
+
+    def cmd_get_settings(self):
+        raise NotImplementedError("cmd_get_settings not implemented for this reader")
+
+    def cmd_set_settings(self, value: bytes = b''):
+        raise NotImplementedError("cmd_set_settings not implemented for this reader")
+
+    def cmd_save_settings(self):
+        raise NotImplementedError("cmd_save_settings not implemented for this reader")
+
+    def cmd_set_continuous_mode(self):
+        raise NotImplementedError("cmd_set_continuous_mode not implemented for this reader")
+
+    def cmd_set_command_mode(self):
+        raise NotImplementedError("cmd_set_command_mode not implemented for this reader")
+
+    def cmd_set_illumination(self, value: int = 0):
+        raise NotImplementedError("cmd_set_illumination not implemented for this reader")
+
+    def cmd_set_aimer(self, value: int = 0):
+        raise NotImplementedError("cmd_set_aimer not implemented for this reader")
+
+    def cmd_set_beeper(self, value: int = 0):
+        raise NotImplementedError("cmd_set_beeper not implemented for this reader")
+
+    def cmd_set_read_interval(self, value: float = 0):
+        raise NotImplementedError("cmd_set_read_interval not implemented for this reader")
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        raise NotImplementedError("cmd_set_same_barcode_delay not implemented for this reader")
+
+    def test_baudrates(self):
+        for baudrate in common_baud_rates + list(reversed(common_baud_rates)):
+            works, _ = self.cmd_set_baudrate(int(baudrate))
+            if works:
+                print(baudrate, "Success")
+            else:
+                print(baudrate, "Failed")
+
+# ------------------------
+# GM65 Scanner
+# ------------------------
+class GM65Scanner(BaseScanner):
+    def __init__(self, serial_port):
+        super().__init__(serial_port)
+
+    def tx_header(self):
+        return binascii.unhexlify('7e00')
+
+    def compute_checksum(self, data: bytes) -> bytes:
+        return compute_crc16_xmodem(data)
+
+    def check_checksum(self, data: bytes) -> bool:
+        return check_crc16_xmodem(data)
+
+    def header_ok(self):
+        return b'020000'
+
+    def rx_struct_fmt(self):
+        return "3sB"
+
+    def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
+        raw_data = self.tx_header() + command + value
+        checksum = self.compute_checksum(command + value)
+        return raw_data + checksum
+
+    def parse_rx(self, data: bytes):
+        header_len = struct.calcsize(self.rx_struct_fmt())
+        try:
+            header, data_len = struct.unpack(self.rx_struct_fmt(), data[:header_len])
+        except struct.error:
+            return None, b''
+
+        if header.hex() in self.header_ok().decode():
+            if self.check_checksum(data[1:header_len + data_len + 2]):
                 return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
+        return None, b''
 
-        elif reader_info["tx_checksum_bytes"] == "compute_bcc":
-            if check_bcc(data[len(header)-1:header_len + data_len + 1]):
+    # Command functions for GM65 that directly create the command and send
+    def cmd_get_hw_version(self):
+        command = binascii.unhexlify('070100e101')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_get_sw_version(self):
+        command = binascii.unhexlify('070100e201')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_get_sw_year(self):
+        command = binascii.unhexlify('070100e301')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_get_settings(self):
+        command = binascii.unhexlify('0701000001')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_settings(self, value: bytes = b''):
+        command = binascii.unhexlify('08010000')
+        return self.send_and_parse(self.create_tx(command, value))
+
+    def cmd_save_settings(self):
+        command = binascii.unhexlify('0901000000')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_continuous_mode(self):
+        command = binascii.unhexlify('0801000201')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_continuous_mode(self):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        settings_int = set_bit(settings_int, 2)
+        settings_int = clear_bit(settings_int, 3)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    # Always Off   (Value = -1)
+    # Normal Mode  (Value = 0)
+    # Always On    (Value = 1)
+    def cmd_set_illumination(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 3)
+            settings_int = clear_bit(settings_int, 2)
+        elif value == 0:
+            settings_int = set_bit(settings_int, 2)
+            settings_int = clear_bit(settings_int, 3)
+        elif value > 0:
+            settings_int = set_bit(settings_int, 3)
+            settings_int = set_bit(settings_int, 2)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    # Always Off   (Value = -1)
+    # Normal Mode  (Value = 0)
+    # Always On    (Value = 1)
+    def cmd_set_aimer(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 5)
+            settings_int = clear_bit(settings_int, 4)
+        elif value == 0:
+            settings_int = set_bit(settings_int, 4)
+            settings_int = clear_bit(settings_int, 5)
+        elif value > 0:
+            settings_int = set_bit(settings_int, 5)
+            settings_int = set_bit(settings_int, 4)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    # Muted  (Value = -1)
+    # On     (Value = 1)
+    def cmd_set_beeper(self, value: int = 0):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        if value < 0:
+            settings_int = clear_bit(settings_int, 6)
+        elif value == 0:
+            raise NotImplementedError
+        elif value > 0:
+            settings_int = set_bit(settings_int, 6)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
+
+    def cmd_set_read_interval(self, value: float = 0):
+        command = binascii.unhexlify('08010005')
+        value = (round(value * 10)).to_bytes(1)
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        command = binascii.unhexlify('08010013')
+        value = (round(value * 10)).to_bytes(1)
+        return self.send_and_parse(self.create_tx(command, value))
+
+    def cmd_send_raw(self, value: str = ''):
+        command = binascii.unhexlify(value)
+        return self.send_and_parse(self.create_tx(command))
+
+
+    def cmd_set_baudrate(self, value: int = 9600):
+        baudvalues = { # Note that byte order here is reversed compared to what is in the datasheet...
+            9600: b'3901',
+            14400: b'd000',
+            19200: b'9c00',
+            38400: b'4e00',
+            57600: b'3400',
+            115200: b'1a00'
+        }
+        command = binascii.unhexlify('0802002A')
+        reply, extra = self.send_and_parse(self.create_tx(command, binascii.unhexlify(baudvalues[value])))
+        self.serial_port.baudrate = value
+        # Test to see if everything worked...
+        reply, extra = self.cmd_get_sw_version()
+        if reply:
+            return True, None
+        else:
+            return False, None
+
+# ------------------------
+# M3Y-W Scanner
+# ------------------------
+class M3YWScanner(BaseScanner):
+    def __init__(self, serial_port):
+        super().__init__(serial_port)
+
+    def tx_header(self):
+        return binascii.unhexlify('5a00')
+
+    def compute_checksum(self, data: bytes) -> bytes:
+        return compute_bcc(data)
+
+    def check_checksum(self, data: bytes) -> bool:
+        return check_bcc(data)
+
+    def header_ok(self):
+        return b'5a01'
+
+    def rx_struct_fmt(self):
+        return ">2sH"
+
+    def etx_bytes(self):
+        return binascii.unhexlify('a5')
+
+    def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
+        # Value not used here in this reader
+        command_len = len(command).to_bytes(2, byteorder='big')
+        raw_data = self.tx_header() + command_len + command
+        checksum = self.compute_checksum(command_len + command)
+        return raw_data + checksum + self.etx_bytes()
+
+    def parse_rx(self, data: bytes):
+        header_len = struct.calcsize(self.rx_struct_fmt())
+        try:
+            header, data_len = struct.unpack(self.rx_struct_fmt(), data[:header_len])
+        except struct.error:
+            return None, b''
+
+        if header.hex() in self.header_ok().decode():
+            if self.check_checksum(data[header_len - 3:header_len + data_len + 1]):
                 return data[header_len:header_len + data_len], data[header_len + data_len + 2:]
+        return None, b''
 
+    # Command functions for M3YW that directly create the command and send
+    def cmd_get_sw_version(self):
+        command = b'T_OUT_CVER'
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_continuous_mode(self):
+        command = b'S_CMD_020E'
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_command_mode(self):
+        command = b'S_CMD_020D'
+        return self.send_and_parse(self.create_tx(command))
+
+    # Command functions for M3YW that directly create the command and send
+    # Always Off  S_CMD_03L0 (Value = -1)
+    # Normal Mode S_CMD_03L2 (Value = 0)
+    # Always On   S_CMD_03L1 (Value = 1)
+    def cmd_set_illumination(self, value: int = 0):
+        if value < 0:
+            command = b'S_CMD_03L0'
+        elif value == 0:
+            command = b'S_CMD_03L2'
+        elif value > 0:
+            command = b'S_CMD_03L1'
+        return self.send_and_parse(self.create_tx(command))
+
+    # Always Off  S_CMD_03A0 (Value = -1)
+    # Normal Mode S_CMD_03A2 (Value = 0)
+    # Always On S_CMD_03A1 (Value = 1)
+    def cmd_set_aimer(self, value: int = 0):
+        if value < 0:
+            command = b'S_CMD_03A0'
+        elif value == 0:
+            command = b'S_CMD_03A2'
+        elif value > 0:
+            command = b'S_CMD_03A1'
+
+        return self.send_and_parse(self.create_tx(command))
+
+    # Mute all        S_CMD_04F0 (Value = -1)
+    # Unmute all      S_CMD_04F1 (Value = 1)
+    def cmd_set_beeper(self, value: int = 0):
+        if value < 0:
+            command = b'S_CMD_04F0'
+        elif value == 0:
+            raise NotImplementedError
+        elif value > 0:
+            command = b'S_CMD_04F1'
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_read_interval(self, value: float = 0):
+        command = b'S_CMD_MARR' + str(round(value*1000)).encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        command = b'S_CMD_MA31'
+        self.send_and_parse(self.create_tx(command))
+        command = b'S_CMD_MA41'
+        self.send_and_parse(self.create_tx(command))
+        command = b'S_CMD_MARI' + str(round(value*1000)).encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_send_raw(self, value: str = ''):
+        command = value.encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_baudrate(self, value: int = 9600):
+        command = b'S_CMD_H3BR' + str(value).encode()
+        reply, extra = self.send_and_parse(self.create_tx(command, value))
+        self.serial_port.baudrate = value
+        # Test to see if everything worked...
+        reply, extra = self.cmd_get_sw_version()
+        if reply:
+            return True, None
+        else:
+            return False, None
+
+# ------------------------
+# Scanner Factory
+# ------------------------
+def detect_scanner(serial_port) -> BaseScanner:
+    """
+    Identify the scanner by sending a request for its software version.
+    Uses send_and_parse directly for each scanner type.
+    """
+    gm65_scanner = GM65Scanner(serial_port)
+    m3yw_scanner = M3YWScanner(serial_port)
+
+    # Try GM65 scanner
+    reply, _ = gm65_scanner.cmd_get_sw_version()
+    if reply:
+        print("Identified Scanner: GM65Scanner")
+        return gm65_scanner
     else:
-        return None
+        print("GM65Scanner not detected")
 
-ser = serial.Serial(args.port, 9600, timeout=1)
+    # Try M3YW scanner
 
-# Determine the reader type
-reader = None
-for test_reader in scanner_module_data.keys():
-    print("Looking for", test_reader)
-    ser.write(create_tx(test_reader,"cmd_get_sw_version")) # This command is available on most readers
-    if parse_rx(test_reader,ser.read(64)): # This will return none readers like the M3Y-W
-        print("Identified Reader:", test_reader)
-        reader = test_reader
-        break
+    reply, _ = m3yw_scanner.cmd_get_sw_version()
+    if reply:
+        print("Identified Scanner: M3YWScanner")
+        return m3yw_scanner
+    else:
+        print("M3YWScanner not detected")
 
-if not reader:
-    exit("No supported reader found...")
+    raise RuntimeError("No supported scanner found")
 
-# Sets how long to wait for data from the scanner (Can be really short when just querying for settings)
-scan_duration = 1
+# ------------------------
+# Main Script
+# ------------------------
+parser = argparse.ArgumentParser(description="Scanner Interface")
+parser.add_argument("port", help="Serial port to use")
+parser.add_argument("--scanner", type=str, help="Scanner type (gm65 or m3y)")
+parser.add_argument("--hw-version", action='store_true', help="Query the device for the hardware version")
+parser.add_argument("--sw-version", action='store_true', help="Query the device for the software version")
+parser.add_argument("--sw-year", action='store_true', help="Query the device for the software year")
+parser.add_argument("--get-settings", action='store_true', help="Get the settings zome (GM65) and represent as hex")
+parser.add_argument("--set-settings", help="Save the supplied byte to the settings zone (GM65)")
+parser.add_argument("--set-illumination", type=int, help="Adjust the illumination light. -1 = always off, 0 = On while scanning, 1 = always on")
+parser.add_argument("--set-aimer", type=int, help="Adjust the aiming light. -1 = always off, 0 = On while scanning, 1 = always on")
+parser.add_argument("--set-beeper", type=int, help="Adjust the beeper. -1 = muted, 1 = on")
+parser.add_argument("--set-read-interval", type=float, help="Adjust the minimum time between QR code reads")
+parser.add_argument("--set-same-barcode-delay", type=float, help="Adjust the minimumt ime between re-reading the same QR code")
+parser.add_argument("--send-raw-cmd", type=str, help="Send a raw command to the reader")
+parser.add_argument("--save-settings", action='store_true', help="Save settings to EEPROM (Required for GM65 to persist settings across reboots)")
+parser.add_argument("--set-continuous-mode", action='store_true', help="Put scanner in continious mode")
+parser.add_argument("--set-command-mode", action='store_true', help="Put scanner in command mode (will stop continious mode)")
+parser.add_argument("--set-baudrate", choices=common_baud_rates, help="Changes the scanners baudrate and checks if this was successful")
+parser.add_argument("--baudrate", choices=common_baud_rates, help="Sets the baudrate that this tool will use (Default 9600)")
+parser.add_argument("--test-baudrates", action='store_true', help="Runs through a list of common baud rates to see what your device supports (Or finds out what BAUD it is currently using)")
 
-if args.hw_version:
-    print("Getting Hardware Version...")
-    scan_command = create_tx(reader,"cmd_get_hw_version")
-elif args.sw_version:
-    print("Getting Software Version...")
-    scan_command = create_tx(reader,"cmd_get_sw_version")
-elif args.sw_year:
-    print("Getting Software Year...")
-    scan_command = create_tx(reader,"cmd_get_sw_year")
-elif args.get_settings:
-    print("Getting Settings Year...")
-    scan_command = create_tx(reader,"cmd_get_settings")
-elif args.set_settings:
-    print("Setting Settings...")
-    scan_command = create_tx(reader,"cmd_set_settings", args.set_settings.encode())
-elif args.save_settings:
-    print("Saving Settings...")
-    scan_command = create_tx(reader,"cmd_save_settings")
+args = parser.parse_args()
+
+baudrate = 9600
+if args.baudrate:
+    baudrate = args.baudrate
+
+ser = serial.Serial(args.port, baudrate, timeout=1)
+
+if "gm65" in args.scanner.lower():
+    scanner = GM65Scanner(ser)
+elif "m3y" in args.scanner.lower():
+    scanner = M3YWScanner(ser)
 else:
-    print("Scanning...")
-    # Scan command for normal continious read
-    scan_command = create_tx(reader, "cmd_start_cont_scan")
+    scanner = detect_scanner(ser)
+
+scan_duration = 1
+if args.hw_version:
+    reply, extra = scanner.cmd_get_hw_version()
+elif args.sw_version:
+    reply, extra = scanner.cmd_get_sw_version()
+elif args.sw_year:
+    reply, extra = scanner.cmd_get_sw_year()
+elif args.get_settings:
+    reply, extra = scanner.cmd_get_settings()
+elif args.set_settings:
+    reply, extra = scanner.cmd_set_settings(args.set_settings.encode())
+elif args.save_settings:
+    reply, extra = scanner.cmd_save_settings()
+elif args.set_illumination is not None:
+    print("Setting Illumination")
+    reply, extra = scanner.cmd_set_illumination(args.set_illumination)
+elif args.set_aimer is not None:
+    print("Setting Aimer")
+    reply, extra = scanner.cmd_set_aimer(args.set_aimer)
+elif args.set_beeper is not None:
+    print("Setting Beeper")
+    reply, extra = scanner.cmd_set_beeper(args.set_beeper)
+elif args.set_read_interval is not None:
+    print("Setting Read Interval")
+    reply, extra = scanner.cmd_set_read_interval(args.set_read_interval)
+elif args.set_same_barcode_delay is not None:
+    print("Setting Same Barcode Delay")
+    reply, extra = scanner.cmd_set_same_barcode_delay(args.set_same_barcode_delay)
+elif args.send_raw_cmd:
+    print("Sending raw command")
+    reply, extra = scanner.cmd_send_raw(args.send_raw_cmd)
+elif args.set_continuous_mode:
+    print("Setting Continuous Mode")
+    reply, extra = scanner.cmd_set_continuous_mode()
+elif args.set_command_mode:
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_command_mode()
+elif args.set_baudrate is not None:
+    print("Setting Baud Rate")
+    reply, extra = scanner.cmd_set_baudrate(int(args.set_baudrate))
+    if reply:
+        print("Baudrate Changed Successfully!")
+    else:
+        print("Baudrate Change Failed...")
+elif args.test_baudrates:
+    scanner.test_baudrates()
+else:
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_continuous_mode()
+
+    print("Scanning for 10 Seconds")
     scan_duration = 10
+    # Keep scanning
+    start = time.time()
+    rx_data = b''
+    while (time.time() - start) <= scan_duration:
+        rx_data += ser.read(1024)
 
-print("Sending:", scan_command, ", AsHex:", binascii.hexlify(scan_command))
-ser.write(scan_command)
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_command_mode()
+    print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
 
-start_time = time.time()
+# Keep scanning
+start = time.time()
 rx_data = b''
+while (time.time() - start) <= scan_duration:
+    rx_data += ser.read(1024)
 
-while (time.time() - start_time) <= scan_duration:
-    byte = ser.read(1024)
-    rx_data += byte
+print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
 
-print("Got Raw Data:",rx_data, ", AsHex:", binascii.hexlify(rx_data))
-
-# Process data a bit
-reply, extra_data = parse_rx(reader,rx_data)
-
-print("Reply Data:", reply, ", AsHex:", binascii.hexlify(reply).hex())
-print("Extra Data:", extra_data, ", AsHex:", binascii.hexlify(extra_data).hex())
+ser.close()
