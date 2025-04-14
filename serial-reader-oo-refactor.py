@@ -6,6 +6,19 @@ import binascii
 from abc import ABC, abstractmethod
 
 # ------------------------
+# Useful constants
+# ------------------------
+# Not exhaustive, but supported by both the M3Y and GM65
+common_baud_rates = [
+    '9600',
+    '14400',
+    '19200',
+    '38400',
+    '57600',
+    '115200',
+]
+
+# ------------------------
 # Utility Functions
 # ------------------------
 def compute_crc16_xmodem(data: bytes) -> bytes:
@@ -47,7 +60,6 @@ def clear_bit(val, bit): return val & ~(1 << bit)
 def toggle_bit(val, bit): return val ^ (1 << bit)
 def check_bit(val, bit): return (val >> bit) & 1
 
-
 # ------------------------
 # Abstract Scanner Class
 # ------------------------
@@ -77,10 +89,6 @@ class BaseScanner(ABC):
         pass
 
     @abstractmethod
-    def etx_bytes(self) -> bytes:
-        pass
-
-    @abstractmethod
     def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
         pass
 
@@ -88,41 +96,48 @@ class BaseScanner(ABC):
     def parse_rx(self, data: bytes):
         pass
 
-    def send_and_parse(self, cmd_function, value: bytes = b''):
-        tx_data = cmd_function(value)
-        print("Sent:", tx_data, "AsHex:", binascii.hexlify(tx_data))
+    @abstractmethod
+    def cmd_send_raw(self, value: str = ''):
+        pass
+
+    def etx_bytes(self) -> bytes:
+        pass
+
+    def send_and_parse(self, tx_data):
+        print("Sent (Raw):", tx_data, "AsHex:", binascii.hexlify(tx_data))
         self.serial_port.write(tx_data)
         rx_data = self.serial_port.read(1024)
-        print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
+        print("Got (Raw):", rx_data, "AsHex:", binascii.hexlify(rx_data))
         reply, extra = self.parse_rx(rx_data)
-        print("Reply:", reply, "AsHex:", binascii.hexlify(reply))
-        print("Extra:", extra, "AsHex:", binascii.hexlify(extra))
+        if reply:
+            print("Reply:", reply, "AsHex:", binascii.hexlify(reply))
+            print("Extra:", extra, "AsHex:", binascii.hexlify(extra))
         return reply, extra
 
     # Placeholder command methods
-    def cmd_get_hw_version(self, value: bytes = b''):
+    def cmd_get_hw_version(self):
         raise NotImplementedError("cmd_get_hw_version not implemented for this reader")
 
-    def cmd_get_sw_version(self, value: bytes = b''):
+    def cmd_get_sw_version(self):
         raise NotImplementedError("cmd_get_sw_version not implemented for this reader")
 
-    def cmd_get_sw_year(self, value: bytes = b''):
+    def cmd_get_sw_year(self):
         raise NotImplementedError("cmd_get_sw_year not implemented for this reader")
 
-    def cmd_get_settings(self, value: bytes = b''):
+    def cmd_get_settings(self):
         raise NotImplementedError("cmd_get_settings not implemented for this reader")
 
     def cmd_set_settings(self, value: bytes = b''):
         raise NotImplementedError("cmd_set_settings not implemented for this reader")
 
-    def cmd_save_settings(self, value: bytes = b''):
+    def cmd_save_settings(self):
         raise NotImplementedError("cmd_save_settings not implemented for this reader")
 
-    def cmd_start_cont_scan(self, value: bytes = b''):
-        raise NotImplementedError("cmd_start_cont_scan not implemented for this reader")
+    def cmd_set_continuous_mode(self):
+        raise NotImplementedError("cmd_set_continuous_mode not implemented for this reader")
 
-    def cmd_stop_scan(self, value: bytes = b''):
-        raise NotImplementedError("cmd_stop_scan not implemented for this reader")
+    def cmd_set_command_mode(self):
+        raise NotImplementedError("cmd_set_command_mode not implemented for this reader")
 
     def cmd_set_illumination(self, value: int = 0):
         raise NotImplementedError("cmd_set_illumination not implemented for this reader")
@@ -133,6 +148,19 @@ class BaseScanner(ABC):
     def cmd_set_beeper(self, value: int = 0):
         raise NotImplementedError("cmd_set_beeper not implemented for this reader")
 
+    def cmd_set_read_interval(self, value: float = 0):
+        raise NotImplementedError("cmd_set_read_interval not implemented for this reader")
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        raise NotImplementedError("cmd_set_same_barcode_delay not implemented for this reader")
+
+    def test_baudrates(self):
+        for baudrate in common_baud_rates + list(reversed(common_baud_rates)):
+            works, _ = self.cmd_set_baudrate(int(baudrate))
+            if works:
+                print(baudrate, "Success")
+            else:
+                print(baudrate, "Failed")
 
 # ------------------------
 # GM65 Scanner
@@ -156,13 +184,10 @@ class GM65Scanner(BaseScanner):
     def rx_struct_fmt(self):
         return "3sB"
 
-    def etx_bytes(self):
-        return b''
-
     def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
         raw_data = self.tx_header() + command + value
         checksum = self.compute_checksum(command + value)
-        return raw_data + checksum + self.etx_bytes()
+        return raw_data + checksum
 
     def parse_rx(self, data: bytes):
         header_len = struct.calcsize(self.rx_struct_fmt())
@@ -177,33 +202,42 @@ class GM65Scanner(BaseScanner):
         return None, b''
 
     # Command functions for GM65 that directly create the command and send
-    def cmd_get_hw_version(self, value: bytes = b''):
+    def cmd_get_hw_version(self):
         command = binascii.unhexlify('070100e101')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_get_sw_version(self, value: bytes = b''):
+    def cmd_get_sw_version(self):
         command = binascii.unhexlify('070100e201')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_get_sw_year(self, value: bytes = b''):
+    def cmd_get_sw_year(self):
         command = binascii.unhexlify('070100e301')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_get_settings(self, value: bytes = b''):
+    def cmd_get_settings(self):
         command = binascii.unhexlify('0701000001')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
     def cmd_set_settings(self, value: bytes = b''):
         command = binascii.unhexlify('08010000')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command, value))
 
-    def cmd_save_settings(self, value: bytes = b''):
+    def cmd_save_settings(self):
         command = binascii.unhexlify('0901000000')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_start_cont_scan(self, value: bytes = b''):
+    def cmd_set_continuous_mode(self):
         command = binascii.unhexlify('0801000201')
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_continuous_mode(self):
+        settings, extra = self.cmd_get_settings()
+        settings_int = settings[0]
+        settings_int = set_bit(settings_int, 2)
+        settings_int = clear_bit(settings_int, 3)
+        self.cmd_set_settings(bytes([settings_int]))
+        self.cmd_save_settings()
+        return True, None
 
     # Always Off   (Value = -1)
     # Normal Mode  (Value = 0)
@@ -258,6 +292,40 @@ class GM65Scanner(BaseScanner):
         self.cmd_save_settings()
         return True, None
 
+    def cmd_set_read_interval(self, value: float = 0):
+        command = binascii.unhexlify('08010005')
+        value = (round(value * 10)).to_bytes(1)
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        command = binascii.unhexlify('08010013')
+        value = (round(value * 10)).to_bytes(1)
+        return self.send_and_parse(self.create_tx(command, value))
+
+    def cmd_send_raw(self, value: str = ''):
+        command = binascii.unhexlify(value)
+        return self.send_and_parse(self.create_tx(command))
+
+
+    def cmd_set_baudrate(self, value: int = 9600):
+        baudvalues = { # Note that byte order here is reversed compared to what is in the datasheet...
+            9600: b'3901',
+            14400: b'd000',
+            19200: b'9c00',
+            38400: b'4e00',
+            57600: b'3400',
+            115200: b'1a00'
+        }
+        command = binascii.unhexlify('0802002A')
+        reply, extra = self.send_and_parse(self.create_tx(command, binascii.unhexlify(baudvalues[value])))
+        self.serial_port.baudrate = value
+        # Test to see if everything worked...
+        reply, extra = self.cmd_get_sw_version()
+        if reply:
+            return True, None
+        else:
+            return False, None
+
 # ------------------------
 # M3Y-W Scanner
 # ------------------------
@@ -284,9 +352,10 @@ class M3YWScanner(BaseScanner):
         return binascii.unhexlify('a5')
 
     def create_tx(self, command: bytes, value: bytes = b'') -> bytes:
+        # Value not used here in this reader
         command_len = len(command).to_bytes(2, byteorder='big')
-        raw_data = self.tx_header() + command_len + command + value
-        checksum = self.compute_checksum(command_len + command + value)
+        raw_data = self.tx_header() + command_len + command
+        checksum = self.compute_checksum(command_len + command)
         return raw_data + checksum + self.etx_bytes()
 
     def parse_rx(self, data: bytes):
@@ -302,17 +371,17 @@ class M3YWScanner(BaseScanner):
         return None, b''
 
     # Command functions for M3YW that directly create the command and send
-    def cmd_get_sw_version(self, value: bytes = b''):
+    def cmd_get_sw_version(self):
         command = b'T_OUT_CVER'
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_start_cont_scan(self, value: bytes = b''):
+    def cmd_set_continuous_mode(self):
         command = b'S_CMD_020E'
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
-    def cmd_stop_scan(self, value: bytes = b''):
+    def cmd_set_command_mode(self):
         command = b'S_CMD_020D'
-        return self.send_and_parse(lambda value: self.create_tx(command, value), value)
+        return self.send_and_parse(self.create_tx(command))
 
     # Command functions for M3YW that directly create the command and send
     # Always Off  S_CMD_03L0 (Value = -1)
@@ -325,7 +394,7 @@ class M3YWScanner(BaseScanner):
             command = b'S_CMD_03L2'
         elif value > 0:
             command = b'S_CMD_03L1'
-        return self.send_and_parse(lambda value: self.create_tx(command), value)
+        return self.send_and_parse(self.create_tx(command))
 
     # Always Off  S_CMD_03A0 (Value = -1)
     # Normal Mode S_CMD_03A2 (Value = 0)
@@ -338,7 +407,7 @@ class M3YWScanner(BaseScanner):
         elif value > 0:
             command = b'S_CMD_03A1'
 
-        return self.send_and_parse(lambda value: self.create_tx(command), value)
+        return self.send_and_parse(self.create_tx(command))
 
     # Mute all        S_CMD_04F0 (Value = -1)
     # Unmute all      S_CMD_04F1 (Value = 1)
@@ -349,7 +418,34 @@ class M3YWScanner(BaseScanner):
             raise NotImplementedError
         elif value > 0:
             command = b'S_CMD_04F1'
-        return self.send_and_parse(lambda value: self.create_tx(command), value)
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_read_interval(self, value: float = 0):
+        command = b'S_CMD_MARR' + str(round(value*1000)).encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_same_barcode_delay(self, value: float = 0):
+        command = b'S_CMD_MA31'
+        self.send_and_parse(self.create_tx(command))
+        command = b'S_CMD_MA41'
+        self.send_and_parse(self.create_tx(command))
+        command = b'S_CMD_MARI' + str(round(value*1000)).encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_send_raw(self, value: str = ''):
+        command = value.encode()
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_baudrate(self, value: int = 9600):
+        command = b'S_CMD_H3BR' + str(value).encode()
+        reply, extra = self.send_and_parse(self.create_tx(command, value))
+        self.serial_port.baudrate = value
+        # Test to see if everything worked...
+        reply, extra = self.cmd_get_sw_version()
+        if reply:
+            return True, None
+        else:
+            return False, None
 
 # ------------------------
 # Scanner Factory
@@ -363,21 +459,20 @@ def detect_scanner(serial_port) -> BaseScanner:
     m3yw_scanner = M3YWScanner(serial_port)
 
     # Try GM65 scanner
-    try:
-        reply, _ = gm65_scanner.cmd_get_sw_version()
-        if reply:
-            print("Identified Scanner: GM65Scanner")
-            return gm65_scanner
-    except Exception as e:
+    reply, _ = gm65_scanner.cmd_get_sw_version()
+    if reply:
+        print("Identified Scanner: GM65Scanner")
+        return gm65_scanner
+    else:
         print("GM65Scanner not detected")
 
     # Try M3YW scanner
-    try:
-        reply, _ = m3yw_scanner.cmd_get_sw_version()
-        if reply:
-            print("Identified Scanner: M3YWScanner")
-            return m3yw_scanner
-    except Exception as e:
+
+    reply, _ = m3yw_scanner.cmd_get_sw_version()
+    if reply:
+        print("Identified Scanner: M3YWScanner")
+        return m3yw_scanner
+    else:
         print("M3YWScanner not detected")
 
     raise RuntimeError("No supported scanner found")
@@ -387,6 +482,7 @@ def detect_scanner(serial_port) -> BaseScanner:
 # ------------------------
 parser = argparse.ArgumentParser(description="Scanner Interface")
 parser.add_argument("port", help="Serial port to use")
+parser.add_argument("--scanner", type=str, help="Scanner type (gm65 or m3y)")
 parser.add_argument("--hw-version", action='store_true')
 parser.add_argument("--sw-version", action='store_true')
 parser.add_argument("--sw-year", action='store_true')
@@ -395,13 +491,30 @@ parser.add_argument("--set-settings")
 parser.add_argument("--set-illumination", type=int)
 parser.add_argument("--set-aimer", type=int)
 parser.add_argument("--set-beeper", type=int)
+parser.add_argument("--set-read-interval", type=float)
+parser.add_argument("--set-same-barcode-delay", type=float)
+parser.add_argument("--send-raw-cmd", type=str)
 parser.add_argument("--save-settings", action='store_true')
-parser.add_argument("--start-capture", action='store_true')
-parser.add_argument("--stop-capture", action='store_true')
+parser.add_argument("--set-continuous-mode", action='store_true')
+parser.add_argument("--set-command-mode", action='store_true')
+parser.add_argument("--set-baudrate", choices=common_baud_rates)
+parser.add_argument("--baudrate", choices=common_baud_rates)
+parser.add_argument("--test-baudrates", action='store_true')
+
 args = parser.parse_args()
 
-ser = serial.Serial(args.port, 9600, timeout=1)
-scanner = detect_scanner(ser)
+baudrate = 9600
+if args.baudrate:
+    baudrate = args.baudrate
+
+ser = serial.Serial(args.port, baudrate, timeout=1)
+
+if "gm65" in args.scanner.lower():
+    scanner = GM65Scanner(ser)
+elif "m3y" in args.scanner.lower():
+    scanner = M3YWScanner(ser)
+else:
+    scanner = detect_scanner(ser)
 
 scan_duration = 1
 if args.hw_version:
@@ -425,12 +538,41 @@ elif args.set_aimer is not None:
 elif args.set_beeper is not None:
     print("Setting Beeper")
     reply, extra = scanner.cmd_set_beeper(args.set_beeper)
-elif args.stop_capture:
-    print("Setting Beeper")
-    reply, extra = scanner.cmd_stop_scan()
+elif args.set_read_interval is not None:
+    print("Setting Read Interval")
+    reply, extra = scanner.cmd_set_read_interval(args.set_read_interval)
+elif args.set_same_barcode_delay is not None:
+    print("Setting Same Barcode Delay")
+    reply, extra = scanner.cmd_set_same_barcode_delay(args.set_same_barcode_delay)
+elif args.send_raw_cmd:
+    print("Sending raw command")
+    reply, extra = scanner.cmd_send_raw(args.send_raw_cmd)
+elif args.set_continuous_mode:
+    print("Setting Continuous Mode")
+    reply, extra = scanner.cmd_set_continuous_mode()
+elif args.set_command_mode:
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_command_mode()
+elif args.set_baudrate is not None:
+    print("Setting Baud Rate")
+    reply, extra = scanner.cmd_set_baudrate(int(args.set_baudrate))
+elif args.test_baudrates:
+    scanner.test_baudrates()
 else:
-    reply, extra = scanner.cmd_start_cont_scan()
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_continuous_mode()
+
+    print("Scanning for 10 Seconds")
     scan_duration = 10
+    # Keep scanning
+    start = time.time()
+    rx_data = b''
+    while (time.time() - start) <= scan_duration:
+        rx_data += ser.read(1024)
+
+    print("Setting Command Mode")
+    reply, extra = scanner.cmd_set_command_mode()
+    print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
 
 # Keep scanning
 start = time.time()
@@ -438,9 +580,6 @@ rx_data = b''
 while (time.time() - start) <= scan_duration:
     rx_data += ser.read(1024)
 
-try:
-    scanner.cmd_stop_scan()
-except:
-    pass
+print("Got:", rx_data, "AsHex:", binascii.hexlify(rx_data))
 
 ser.close()
