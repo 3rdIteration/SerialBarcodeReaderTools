@@ -240,6 +240,18 @@ class GM65Scanner(BaseScanner):
         command = binascii.unhexlify('08010000')
         return self.send_and_parse(self.create_tx(command, value))
 
+    def cmd_get_address(self, address: bytes):
+        command = binascii.unhexlify(b'0701' + address + b'01')
+        return self.send_and_parse(self.create_tx(command))
+
+    def cmd_set_address(self, address: bytes, value: bytes):
+        command = binascii.unhexlify(b'0801' + address)
+        return self.send_and_parse(self.create_tx(command, binascii.unhexlify(value)))
+
+    def cmd_save_address(self, address: bytes):
+        command = binascii.unhexlify(b'0901' + address + b'00')
+        return self.send_and_parse(self.create_tx(command))
+
     def cmd_save_settings(self):
         command = binascii.unhexlify('0901000000')
         return self.send_and_parse(self.create_tx(command))
@@ -517,9 +529,12 @@ parser.add_argument("--scanner", type=str, help="Scanner type (gm65 or m3y)")
 parser.add_argument("--hw-version", action='store_true', help="Query the device for the hardware version")
 parser.add_argument("--sw-version", action='store_true', help="Query the device for the software version")
 parser.add_argument("--sw-year", action='store_true', help="Query the device for the software year")
-parser.add_argument("--get-settings", action='store_true', help="Get the settings zome (GM65) and represent as hex")
+parser.add_argument("--get-settings", action='store_true', help="Get the common (aim light, illumination, beeper) settings zone (GM65) and represent as hex")
 parser.add_argument("--get-safe-for-binary-qr", help="Check if the connected reader is know to be safe for binary QR scanning")
-parser.add_argument("--set-settings", help="Save the supplied byte to the settings zone (GM65)")
+parser.add_argument("--set-settings", help="Save the supplied byte to the common settings (aim light, illumination, beeper) zone (GM65)")
+parser.add_argument("--get-address", help="Query a given memory address and return the result as a byte")
+parser.add_argument("--set-address", nargs=2, help="Update a given memory address with a byte (Format ")
+parser.add_argument("--save-address", help="Save a memory address so that the current setting is preserved across reboots.")
 parser.add_argument("--set-illumination", type=int, help="Adjust the illumination light. -1 = always off, 0 = On while scanning, 1 = always on")
 parser.add_argument("--set-aimer", type=int, help="Adjust the aiming light. -1 = always off, 0 = On while scanning, 1 = always on")
 parser.add_argument("--set-beeper", type=int, help="Adjust the beeper. -1 = muted, 1 = on")
@@ -560,6 +575,12 @@ elif args.get_settings:
     reply, extra = scanner.cmd_get_settings()
 elif args.set_settings:
     reply, extra = scanner.cmd_set_settings(args.set_settings.encode())
+elif args.get_address:
+    reply, extra = scanner.cmd_get_address(args.get_address.encode())
+elif args.set_address:
+    reply, extra = scanner.cmd_set_address(args.set_address[0].encode(), args.set_address[1].encode())
+elif args.save_address:
+    reply, extra = scanner.cmd_save_address(args.save_address.encode())
 elif args.save_settings:
     reply, extra = scanner.cmd_save_settings()
 elif args.set_illumination is not None:
